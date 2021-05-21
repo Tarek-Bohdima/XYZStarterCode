@@ -9,7 +9,6 @@ import android.database.Cursor;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.support.annotation.Nullable;
-import android.support.design.widget.CollapsingToolbarLayout;
 import android.support.v4.app.LoaderManager;
 import android.support.v4.content.Loader;
 import android.support.v4.widget.SwipeRefreshLayout;
@@ -24,7 +23,6 @@ import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
-
 
 import com.example.xyzreader.R;
 import com.example.xyzreader.data.ArticleLoader;
@@ -46,17 +44,25 @@ public class ArticleListActivity extends AppCompatActivity implements
         LoaderManager.LoaderCallbacks<Cursor> {
 
     private static final String TAG = ArticleListActivity.class.toString();
-    private Toolbar mToolbar;
-    private SwipeRefreshLayout mSwipeRefreshLayout;
-    private RecyclerView mRecyclerView;
-
     private final SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.sss");
     // Use default locale format
     private final SimpleDateFormat outputFormat = new SimpleDateFormat();
     // Most time functions can only handle 1902 - 2037
-    private final GregorianCalendar START_OF_EPOCH = new GregorianCalendar(2,1,1);
-
+    private final GregorianCalendar START_OF_EPOCH = new GregorianCalendar(2, 1, 1);
+    private Toolbar mToolbar;
+    private SwipeRefreshLayout mSwipeRefreshLayout;
+    private RecyclerView mRecyclerView;
     private Adapter adapter;
+    private boolean mIsRefreshing = false;
+    private final BroadcastReceiver mRefreshingReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (UpdaterService.BROADCAST_ACTION_STATE_CHANGE.equals(intent.getAction())) {
+                mIsRefreshing = intent.getBooleanExtra(UpdaterService.EXTRA_REFRESHING, false);
+                updateRefreshingUI();
+            }
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -79,9 +85,12 @@ public class ArticleListActivity extends AppCompatActivity implements
 
         LoaderManager.getInstance(this).initLoader(0, null, this);
 
-        if (savedInstanceState == null) {
-            refresh();
-        }
+        mSwipeRefreshLayout.setOnRefreshListener(new SwipeRefreshLayout.OnRefreshListener() {
+            @Override
+            public void onRefresh() {
+                refresh();
+            }
+        });
     }
 
     private void refresh() {
@@ -101,18 +110,6 @@ public class ArticleListActivity extends AppCompatActivity implements
         unregisterReceiver(mRefreshingReceiver);
     }
 
-    private boolean mIsRefreshing = false;
-
-    private final BroadcastReceiver mRefreshingReceiver = new BroadcastReceiver() {
-        @Override
-        public void onReceive(Context context, Intent intent) {
-            if (UpdaterService.BROADCAST_ACTION_STATE_CHANGE.equals(intent.getAction())) {
-                mIsRefreshing = intent.getBooleanExtra(UpdaterService.EXTRA_REFRESHING, false);
-                updateRefreshingUI();
-            }
-        }
-    };
-
     private void updateRefreshingUI() {
         mSwipeRefreshLayout.setRefreshing(mIsRefreshing);
     }
@@ -131,6 +128,87 @@ public class ArticleListActivity extends AppCompatActivity implements
     @Override
     public void onLoaderReset(@NonNull Loader<Cursor> loader) {
         mRecyclerView.setAdapter(null);
+    }
+
+    public abstract static class CursorCallback<C extends Cursor> extends DiffUtil.Callback {
+        private final C newCursor;
+        private final C oldCursor;
+
+        public CursorCallback(C newCursor, C oldCursor) {
+            this.newCursor = newCursor;
+            this.oldCursor = oldCursor;
+        }
+
+        @Override
+        public int getOldListSize() {
+            return oldCursor == null ? 0 : oldCursor.getCount();
+        }
+
+        @Override
+        public int getNewListSize() {
+            return newCursor == null ? 0 : newCursor.getCount();
+        }
+
+        @Override
+        public final boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
+            return oldCursor.getColumnCount() == newCursor.getColumnCount() && moveCursorsToPosition(oldItemPosition, newItemPosition) && areCursorRowsTheSame(oldCursor, newCursor);
+        }
+
+        @Override
+        public final boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
+            return oldCursor.getColumnCount() == newCursor.getColumnCount() && moveCursorsToPosition(oldItemPosition, newItemPosition) && areRowContentsTheSame(oldCursor, newCursor);
+        }
+
+        @Nullable
+        @Override
+        public final Object getChangePayload(int oldItemPosition, int newItemPosition) {
+            moveCursorsToPosition(oldItemPosition, newItemPosition);
+            return getChangePayload(newCursor, oldCursor);
+        }
+
+        @Nullable
+        public Object getChangePayload(C newCursor, C oldCursor) {
+            return null;
+        }
+
+        private boolean moveCursorsToPosition(int oldItemPosition, int newItemPosition) {
+            boolean newMoved = newCursor.moveToPosition(newItemPosition);
+            boolean oldMoved = oldCursor.moveToPosition(oldItemPosition);
+            return newMoved && oldMoved;
+        }
+
+        /**
+         * Cursors are already moved to positions where you should obtain data by row.
+         * Checks if contents at row are same
+         *
+         * @param oldCursor Old cursor object
+         * @param newCursor New cursor object
+         * @return See DiffUtil
+         */
+        public abstract boolean areRowContentsTheSame(Cursor oldCursor, Cursor newCursor);
+
+        /**
+         * Cursors are already moved to positions where you should obtain data from row
+         * Checks if rows are the same, ideally, check by unique id
+         *
+         * @param oldCursor Old cursor object
+         * @param newCursor New cursor object
+         * @return See DiffUtil
+         */
+        public abstract boolean areCursorRowsTheSame(Cursor oldCursor, Cursor newCursor);
+    }
+
+    public static class ViewHolder extends RecyclerView.ViewHolder {
+        public DynamicHeightNetworkImageView thumbnailView;
+        public TextView titleView;
+        public TextView subtitleView;
+
+        public ViewHolder(View view) {
+            super(view);
+            thumbnailView = (DynamicHeightNetworkImageView) view.findViewById(R.id.thumbnail);
+            titleView = (TextView) view.findViewById(R.id.article_title);
+            subtitleView = (TextView) view.findViewById(R.id.article_subtitle);
+        }
     }
 
     private class Adapter extends RecyclerView.Adapter<ViewHolder> {
@@ -188,8 +266,8 @@ public class ArticleListActivity extends AppCompatActivity implements
             } else {
                 holder.subtitleView.setText(Html.fromHtml(
                         outputFormat.format(publishedDate)
-                        + "<br/>" + " by "
-                        + mCursor.getString(ArticleLoader.Query.AUTHOR)));
+                                + "<br/>" + " by "
+                                + mCursor.getString(ArticleLoader.Query.AUTHOR)));
             }
             holder.thumbnailView.setImageUrl(
                     mCursor.getString(ArticleLoader.Query.THUMB_URL),
@@ -225,82 +303,6 @@ public class ArticleListActivity extends AppCompatActivity implements
         public int getItemCount() {
             if (mCursor == null) return 0;
             return mCursor.getCount();
-        }
-    }
-
-    public abstract static class CursorCallback<C extends Cursor> extends DiffUtil.Callback {
-        private final C newCursor;
-        private final C oldCursor;
-
-        public CursorCallback(C newCursor, C oldCursor) {
-            this.newCursor = newCursor;
-            this.oldCursor = oldCursor;
-        }
-
-        @Override
-        public int getOldListSize() {
-            return oldCursor == null ? 0 : oldCursor.getCount();
-        }
-
-        @Override
-        public int getNewListSize() {
-            return newCursor == null? 0 : newCursor.getCount();
-        }
-
-        @Override
-        public final boolean areItemsTheSame(int oldItemPosition, int newItemPosition) {
-            return oldCursor.getColumnCount() == newCursor.getColumnCount() && moveCursorsToPosition(oldItemPosition, newItemPosition) && areCursorRowsTheSame(oldCursor, newCursor);
-        }
-
-        @Override
-        public final boolean areContentsTheSame(int oldItemPosition, int newItemPosition) {
-            return oldCursor.getColumnCount() == newCursor.getColumnCount() && moveCursorsToPosition(oldItemPosition, newItemPosition) && areRowContentsTheSame(oldCursor, newCursor);
-        }
-
-        @Nullable
-        @Override
-        public final Object getChangePayload(int oldItemPosition, int newItemPosition) {
-            moveCursorsToPosition(oldItemPosition, newItemPosition);
-            return getChangePayload(newCursor, oldCursor);
-        }
-        @Nullable
-        public Object getChangePayload(C newCursor, C oldCursor) {
-            return null;
-        }
-
-        private boolean moveCursorsToPosition(int oldItemPosition, int newItemPosition) {
-            boolean newMoved = newCursor.moveToPosition(newItemPosition);
-            boolean oldMoved = oldCursor.moveToPosition(oldItemPosition);
-            return newMoved && oldMoved;
-        }
-        /** Cursors are already moved to positions where you should obtain data by row.
-         *  Checks if contents at row are same
-         *
-         * @param oldCursor Old cursor object
-         * @param newCursor New cursor object
-         * @return See DiffUtil
-         */
-        public abstract boolean areRowContentsTheSame(Cursor oldCursor, Cursor newCursor);
-
-        /** Cursors are already moved to positions where you should obtain data from row
-         *  Checks if rows are the same, ideally, check by unique id
-         * @param oldCursor Old cursor object
-         * @param newCursor New cursor object
-         * @return See DiffUtil
-         */
-        public abstract boolean areCursorRowsTheSame(Cursor oldCursor, Cursor newCursor);
-    }
-
-    public static class ViewHolder extends RecyclerView.ViewHolder {
-        public DynamicHeightNetworkImageView thumbnailView;
-        public TextView titleView;
-        public TextView subtitleView;
-
-        public ViewHolder(View view) {
-            super(view);
-            thumbnailView = (DynamicHeightNetworkImageView) view.findViewById(R.id.thumbnail);
-            titleView = (TextView) view.findViewById(R.id.article_title);
-            subtitleView = (TextView) view.findViewById(R.id.article_subtitle);
         }
     }
 }
